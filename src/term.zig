@@ -4,12 +4,14 @@ const termios = linux.termios;
 
 // Raw mode solution from: https://blog.fabrb.com/2024/capturing-input-in-real-time-zig-0-14/
 
+const INPUT_BUFFER_SIZE = 32;
+
 pub const TermContext = struct {
     stdout: std.fs.File.Writer,
     stdin: std.fs.File.Reader,
     original_state: termios,
     tty_file: std.fs.File,
-    input_buffer: [10]u8 = undefined,
+    input_buffer: [INPUT_BUFFER_SIZE]u8 = undefined,
     input_len: usize = 0,
     win_size: WinSize,
 
@@ -42,6 +44,7 @@ pub const TermContext = struct {
 
         try stdout.print("\x1B[?1049h", .{}); // Set alternative screen
         // try stdout.print("\x1B[?25l", .{}); // Hide cursor
+        try stdout.print("\x1B[?1002h\x1B[?1015h\x1B[?1006h\x1B[?1003h", .{}); // Mouse setup
         try stdout.print("\x1B[H", .{}); // Put cursor at position 0,0
 
         var ctx = TermContext{
@@ -60,6 +63,8 @@ pub const TermContext = struct {
         self.tty_file.close();
         self.stdout.print("\x1B[?25h", .{}) catch {};
         self.stdout.print("\x1B[?1049l", .{}) catch {};
+        self.stdout.print("\x1b[?9l", .{}) catch {};
+        self.stdout.print("\x1B[?1002l\x1B[?1015l\x1B[?1006l\x1b[?1003l", .{}) catch {};
     }
 
     const Winsize = extern struct {
@@ -85,35 +90,103 @@ pub const TermContext = struct {
         }
         const bytes = self.input_buffer[0..self.input_len];
 
-        if (bytes[0] == 0x1B) {
-            var is_sequence = false;
-            if (self.input_len >= 3) {
-                const seq = bytes[1..3];
-                if (seq[0] == '[' or seq[0] == 'O') {
-                    switch (seq[1]) {
-                        'A', 'B', 'C', 'D' => {
-                            is_sequence = true;
-                            self.consume_bytes(3);
-                            return switch (seq[1]) {
-                                'A' => Input{ .control = ControlKeys.Up },
-                                'B' => Input{ .control = ControlKeys.Down },
-                                'C' => Input{ .control = ControlKeys.Right },
-                                'D' => Input{ .control = ControlKeys.Left },
-                                else => unreachable,
-                            };
-                        },
-                        else => {},
-                    }
-                }
+        // Mouse input
+        if (bytes.len >= 10 and bytes.len < 20 and bytes[0] == 0x1B and
+            bytes[1] == 0x5B and bytes[2] == 0x3C)
+        {
+            const mouse_data = bytes[3 .. bytes.len - 1];
+            var parts = std.mem.split(u8, mouse_data, ";");
+            // b, x, y
+            var mouse: [3]u32 = undefined;
+            var count: usize = 0;
+            while (parts.next()) |part| {
+                if (count >= 3) return error.WrongMouseData;
+                mouse[count] = try std.fmt.parseInt(u32, part, 10);
+                count += 1;
             }
+            self.consume_bytes(bytes.len);
+            return Input{ .mouse = MouseIn{ .b = mouse[0], .x = mouse[1], .y = mouse[2], .suffix = bytes[bytes.len - 1] } };
+        }
 
-            if (!is_sequence) {
-                if (self.input_len == 1) {
+        // Handle control keys
+        if (bytes[0] == 0x1B) {
+            switch (bytes.len) {
+                1 => {
                     self.consume_bytes(1);
                     return Input{ .control = ControlKeys.Escape };
-                }
-                self.consume_bytes(self.input_len);
-                return Input{ .control = null };
+                },
+                3 => {
+                    if (bytes[1] != 0x4F and bytes[1] != 0x5B) {
+                        self.consume_bytes(3);
+                        return Input{ .control = ControlKeys.None };
+                    }
+                    const in = switch (bytes[2]) {
+                        // 0x1B, 0x5B, ...
+                        0x41 => Input{ .control = ControlKeys.Up },
+                        0x42 => Input{ .control = ControlKeys.Down },
+                        0x43 => Input{ .control = ControlKeys.Right },
+                        0x44 => Input{ .control = ControlKeys.Left },
+                        0x46 => Input{ .control = ControlKeys.End },
+                        0x48 => Input{ .control = ControlKeys.Home },
+
+                        // 0x1B, 0x4F, ...
+                        0x50 => Input{ .control = ControlKeys.F1 },
+                        0x51 => Input{ .control = ControlKeys.F2 },
+                        0x52 => Input{ .control = ControlKeys.F3 },
+                        0x53 => Input{ .control = ControlKeys.F4 },
+                        else => Input{ .control = ControlKeys.None },
+                    };
+                    self.consume_bytes(3);
+                    return in;
+                },
+                4 => {
+                    if (bytes[1] != 0x5B or bytes[3] != 0x7E) {
+                        self.consume_bytes(4);
+                        return Input{ .control = ControlKeys.None };
+                    }
+                    const in = switch (bytes[2]) {
+                        0x32 => Input{ .control = ControlKeys.Insert },
+                        0x33 => Input{ .control = ControlKeys.Delete },
+                        0x35 => Input{ .control = ControlKeys.PageUp },
+                        0x36 => Input{ .control = ControlKeys.PageDown },
+                        else => Input{ .control = ControlKeys.None },
+                    };
+                    self.consume_bytes(4);
+                    return in;
+                },
+                5 => {
+                    if (bytes[1] != 0x5B or bytes[4] != 0x7E) {
+                        self.consume_bytes(5);
+                        return Input{ .control = ControlKeys.None };
+                    }
+                    var in: Input = undefined;
+                    if (bytes[2] == 0x31) {
+                        in = switch (bytes[3]) {
+                            0x35 => Input{ .control = ControlKeys.F5 },
+                            0x37 => Input{ .control = ControlKeys.F6 },
+                            0x38 => Input{ .control = ControlKeys.F7 },
+                            0x39 => Input{ .control = ControlKeys.F8 },
+                            else => Input{ .control = ControlKeys.None },
+                        };
+                        self.consume_bytes(5);
+                        return in;
+                    }
+                    if (bytes[2] == 0x32) {
+                        in = switch (bytes[3]) {
+                            0x30 => Input{ .control = ControlKeys.F9 },
+                            0x31 => Input{ .control = ControlKeys.F10 },
+                            0x33 => Input{ .control = ControlKeys.F11 },
+                            0x34 => Input{ .control = ControlKeys.F12 },
+                            else => Input{ .control = ControlKeys.None },
+                        };
+                        self.consume_bytes(5);
+                        return in;
+                    }
+                },
+                else => {
+                    self.consume_bytes(bytes.len);
+                    return Input{ .control = ControlKeys.None };
+                },
             }
         }
 
@@ -145,20 +218,45 @@ pub const ControlKeys = enum {
     Down,
     Left,
     Right,
-    Enter,
-    Space,
     Escape,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Home,
+    End,
+    Insert,
+    Delete,
+    PageUp,
+    PageDown,
     None,
 };
 
 pub const InputType = enum {
     control,
     utf8,
+    mouse,
 };
 
 pub const Input = union(InputType) {
     control: ?ControlKeys,
     utf8: [4]u8,
+    mouse: MouseIn,
+};
+
+pub const MouseIn = struct {
+    b: u32,
+    x: u32,
+    y: u32,
+    suffix: u8,
 };
 
 pub fn utf8_array_equal(a: [4]u8, b: [4]u8) bool {
