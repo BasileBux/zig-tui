@@ -119,6 +119,26 @@ pub const InputField = struct {
                         }
                         self.update_flag = true;
                     },
+                    .Delete => {
+                        if (self.input_len > 0 and self.cursor_pos.x < self.char_size_len) {
+                            const delete_pos = blk: {
+                                var pos: usize = 0;
+                                var x: u32 = 0;
+                                while (x < self.cursor_pos.x) : (x += 1) {
+                                    pos += self.buffer_char_size[x];
+                                }
+                                break :blk pos;
+                            };
+                            const char_size = self.buffer_char_size[self.cursor_pos.x];
+
+                            u.shift_left(self.input_buffer[delete_pos..], 0, self.input_len - delete_pos, char_size);
+                            u.shift_left(self.buffer_char_size[self.cursor_pos.x..], 0, self.char_size_len - self.cursor_pos.x, 1);
+
+                            self.input_len -= char_size;
+                            self.char_size_len -= 1;
+                            self.update_flag = true;
+                        }
+                    },
                     else => {},
                 }
             },
