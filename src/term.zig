@@ -44,7 +44,14 @@ pub const TermContext = struct {
 
         try stdout.print("\x1B[?1049h", .{}); // Set alternative screen
         // try stdout.print("\x1B[?25l", .{}); // Hide cursor
-        try stdout.print("\x1B[?1002h\x1B[?1015h\x1B[?1006h\x1B[?1003h", .{}); // Mouse setup
+
+        try stdout.print("\x1B[?1000h", .{}); // Basic mouse reporting
+        try stdout.print("\x1B[?1001h", .{}); // Highlight mouse reporting
+        try stdout.print("\x1B[?1002h", .{}); // Button events with motion
+        try stdout.print("\x1B[?1003h", .{}); // All motion events
+        try stdout.print("\x1B[?1006h", .{}); // SGR extended mode
+        try stdout.print("\x1B[?1005h", .{}); // UTF-8 extended mode
+
         try stdout.print("\x1B[H", .{}); // Put cursor at position 0,0
 
         var ctx = TermContext{
@@ -64,7 +71,12 @@ pub const TermContext = struct {
         self.stdout.print("\x1B[?25h", .{}) catch {};
         self.stdout.print("\x1B[?1049l", .{}) catch {};
         self.stdout.print("\x1b[?9l", .{}) catch {};
-        self.stdout.print("\x1B[?1002l\x1B[?1015l\x1B[?1006l\x1b[?1003l", .{}) catch {};
+        self.stdout.print("\x1B[?1000l", .{}) catch {};
+        self.stdout.print("\x1B[?1001l", .{}) catch {};
+        self.stdout.print("\x1B[?1002l", .{}) catch {};
+        self.stdout.print("\x1B[?1003l", .{}) catch {};
+        self.stdout.print("\x1B[?1006l", .{}) catch {};
+        self.stdout.print("\x1B[?1005l", .{}) catch {};
     }
 
     const Winsize = extern struct {
@@ -91,7 +103,7 @@ pub const TermContext = struct {
         const bytes = self.input_buffer[0..self.input_len];
 
         // Mouse input
-        if (bytes.len >= 10 and bytes.len < 20 and bytes[0] == 0x1B and
+        if (bytes.len >= 8 and bytes.len < 20 and bytes[0] == 0x1B and
             bytes[1] == 0x5B and bytes[2] == 0x3C)
         {
             const mouse_data = bytes[3 .. bytes.len - 1];

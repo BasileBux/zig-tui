@@ -3,6 +3,9 @@ const term = @import("term.zig");
 const widgets = @import("widgets/widgets.zig");
 const in_f = @import("widgets/input.zig");
 
+const MIN_WIDTH = 80;
+const MIN_HEIGHT = 24;
+
 var window_resized = std.atomic.Value(bool).init(false);
 fn handleSigwinch(sig: c_int) callconv(.C) void {
     _ = sig;
@@ -17,7 +20,6 @@ fn handleSigint(_: c_int) callconv(.C) void {
 pub const Ui = struct {
     ctx: *term.TermContext,
     exit_sig: bool,
-    update: bool,
     input_field: in_f.InputField,
 
     pub fn init(ctx: *term.TermContext) !Ui {
@@ -38,7 +40,6 @@ pub const Ui = struct {
         return Ui{
             .ctx = ctx,
             .exit_sig = false,
-            .update = true,
             .input_field = in_f.InputField.init(ctx.stdout, .{ .x = 1, .y = 1 }, .{ .x = ctx.win_size.cols - 2, .y = 3 }),
         };
     }
@@ -47,6 +48,7 @@ pub const Ui = struct {
         while (!self.exit_sig) {
             try self.signal_manager();
             const in: term.Input = self.ctx.getInput() catch break;
+            self.input_field.update(in);
             switch (in) {
                 term.InputType.control => |control| {
                     const unwrapped_control = control orelse term.ControlKeys.None;
@@ -60,17 +62,14 @@ pub const Ui = struct {
                         },
                     }
                 },
-                term.InputType.utf8 => |value| {
-                    self.update = true;
-                    self.input_field.update(value);
-                },
+                term.InputType.utf8 => |_| {},
+                term.InputType.mouse => |_| {},
             }
 
-            if (self.update) {
+            if (self.input_field.update_flag) {
                 try self.ctx.stdout.print("\x1b[2J\x1b[H", .{}); // Clear screen and move cursor to top left
-                try self.input_field.render();
-                self.update = false;
             }
+            try self.input_field.render();
         }
     }
 
@@ -84,7 +83,7 @@ pub const Ui = struct {
             window_resized.store(false, .seq_cst);
             try self.ctx.getTermSize();
             try self.ctx.stdout.print("\x1b[2J\x1b[H", .{}); // Clear screen and move cursor to top left
-            self.update = true;
+            self.input_field.update_flag = true;
         }
     }
 };
